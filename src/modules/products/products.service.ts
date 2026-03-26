@@ -37,10 +37,10 @@ export class ProductsService {
 
     const [data, total] = await this.productsRepository.findAndCount({
       where,
+      relations: ['recipes'],
       order: { createdAt: 'DESC' },
       skip: (page - 1) * limit,
       take: limit,
-      // sizes đã eager, không cần join thêm
     });
 
     return {

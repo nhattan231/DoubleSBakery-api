@@ -14,6 +14,11 @@ import { Type } from 'class-transformer';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export class CreateProductSizeDto {
+  @ApiPropertyOptional({ description: 'ID của size (truyền khi update size đã tồn tại)' })
+  @IsOptional()
+  @IsString()
+  id?: string;
+
   @ApiProperty({ example: 'M' })
   @IsNotEmpty()
   @IsString()
