@@ -14,6 +14,8 @@ import { ProductionModule } from './modules/production/production.module';
 import { ReportsModule } from './modules/reports/reports.module';
 import { UploadModule } from './modules/upload/upload.module';
 import { HealthModule } from './modules/health/health.module';
+import { StoreSettingsModule } from './modules/store-settings/store-settings.module';
+import { CategoriesModule } from './modules/categories/categories.module';
 
 @Module({
   imports: [
@@ -60,6 +62,8 @@ import { HealthModule } from './modules/health/health.module';
     ReportsModule,
     UploadModule,
     HealthModule,
+    StoreSettingsModule,
+    CategoriesModule,
   ],
 })
 export class AppModule {}
