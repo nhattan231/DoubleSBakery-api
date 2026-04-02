@@ -16,6 +16,8 @@ import { UploadModule } from './modules/upload/upload.module';
 import { HealthModule } from './modules/health/health.module';
 import { StoreSettingsModule } from './modules/store-settings/store-settings.module';
 import { CategoriesModule } from './modules/categories/categories.module';
+import { SuppliesModule } from './modules/supplies/supplies.module';
+import { EquipmentModule } from './modules/equipment/equipment.module';
 
 @Module({
   imports: [
@@ -64,6 +66,8 @@ import { CategoriesModule } from './modules/categories/categories.module';
     HealthModule,
     StoreSettingsModule,
     CategoriesModule,
+    SuppliesModule,
+    EquipmentModule,
   ],
 })
 export class AppModule {}

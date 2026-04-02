@@ -2,6 +2,7 @@ import {
   IsNotEmpty,
   IsOptional,
   IsString,
+  IsIn,
   ValidateNested,
   IsArray,
   IsUUID,
@@ -12,10 +13,28 @@ import { Type } from 'class-transformer';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export class CreatePurchaseOrderItemDto {
-  @ApiProperty({ description: 'Ingredient ID' })
+  @ApiPropertyOptional({
+    description: 'Item type: ingredient | supply | equipment',
+    default: 'ingredient',
+  })
+  @IsOptional()
+  @IsIn(['ingredient', 'supply', 'equipment'])
+  itemType?: string = 'ingredient';
+
+  @ApiPropertyOptional({ description: 'Ingredient ID (required if itemType = ingredient)' })
+  @IsOptional()
   @IsUUID()
-  @IsNotEmpty()
-  ingredientId: string;
+  ingredientId?: string;
+
+  @ApiPropertyOptional({ description: 'Supply ID (required if itemType = supply)' })
+  @IsOptional()
+  @IsUUID()
+  supplyId?: string;
+
+  @ApiPropertyOptional({ description: 'Equipment ID (required if itemType = equipment)' })
+  @IsOptional()
+  @IsUUID()
+  equipmentId?: string;
 
   @ApiProperty({ example: 5000 })
   @IsNumber()

@@ -4,7 +4,7 @@ import {
   Logger,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, LessThanOrEqual } from 'typeorm';
+import { Repository, LessThanOrEqual, ILike } from 'typeorm';
 import { Ingredient } from './entities/ingredient.entity';
 import { CreateIngredientDto } from './dto/create-ingredient.dto';
 import { UpdateIngredientDto } from './dto/update-ingredient.dto';
@@ -28,9 +28,15 @@ export class IngredientsService {
   }
 
   async findAll(pagination: PaginationDto): Promise<PaginationResult<Ingredient>> {
-    const { page = 1, limit = 20 } = pagination;
+    const { page = 1, limit = 20, search } = pagination;
+
+    const where: any = {};
+    if (search?.trim()) {
+      where.name = ILike(`%${search.trim()}%`);
+    }
 
     const [data, total] = await this.ingredientsRepository.findAndCount({
+      where,
       order: { name: 'ASC' },
       skip: (page - 1) * limit,
       take: limit,

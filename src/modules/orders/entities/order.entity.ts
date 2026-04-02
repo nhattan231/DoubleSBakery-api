@@ -9,6 +9,7 @@ import {
   JoinColumn,
 } from 'typeorm';
 import { OrderItem } from './order-item.entity';
+import { OrderSupplyItem } from './order-supply-item.entity';
 import { User } from '../../users/entities/user.entity';
 
 export type OrderStatus =
@@ -50,6 +51,9 @@ export class Order {
   @Column({ type: 'text', nullable: true })
   notes: string;
 
+  @Column({ name: 'deduct_stock', type: 'boolean', default: true })
+  deductStock: boolean;
+
   @Column({ name: 'created_by', nullable: true })
   createdBy: string;
 
@@ -62,6 +66,12 @@ export class Order {
     eager: true,
   })
   items: OrderItem[];
+
+  @OneToMany(() => OrderSupplyItem, (item) => item.order, {
+    cascade: true,
+    eager: true,
+  })
+  supplyItems: OrderSupplyItem[];
 
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;

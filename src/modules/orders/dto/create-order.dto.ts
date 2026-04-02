@@ -41,6 +41,24 @@ export class CreateOrderItemDto {
   customPrice?: number;
 }
 
+export class CreateOrderSupplyItemDto {
+  @ApiProperty({ description: 'Supply ID' })
+  @IsUUID()
+  @IsNotEmpty()
+  supplyId: string;
+
+  @ApiProperty({ example: 1, description: 'Số lượng vật tư' })
+  @IsNumber()
+  @Min(0.001)
+  quantity: number;
+
+  @ApiPropertyOptional({ description: 'Đơn giá (mặc định 0 = miễn phí)', default: 0 })
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  unitPrice?: number;
+}
+
 export class CreateOrderDto {
   @ApiProperty({ example: 'Nguyễn Văn A' })
   @IsNotEmpty()
@@ -62,9 +80,21 @@ export class CreateOrderDto {
   @IsString()
   notes?: string;
 
+  @ApiPropertyOptional({ description: 'Xuất kho khi xác nhận đơn (trừ NL + VT)', default: true })
+  @IsOptional()
+  @IsBoolean()
+  deductStock?: boolean;
+
   @ApiProperty({ type: [CreateOrderItemDto] })
   @IsArray()
   @ValidateNested({ each: true })
   @Type(() => CreateOrderItemDto)
   items: CreateOrderItemDto[];
+
+  @ApiPropertyOptional({ type: [CreateOrderSupplyItemDto] })
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => CreateOrderSupplyItemDto)
+  supplyItems?: CreateOrderSupplyItemDto[];
 }

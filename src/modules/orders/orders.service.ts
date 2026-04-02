@@ -8,9 +8,11 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
 import { Order, OrderStatus } from './entities/order.entity';
 import { OrderItem } from './entities/order-item.entity';
+import { OrderSupplyItem } from './entities/order-supply-item.entity';
 import { Product } from '../products/entities/product.entity';
 import { Recipe } from '../recipes/entities/recipe.entity';
 import { Ingredient } from '../ingredients/entities/ingredient.entity';
+import { Supply } from '../supplies/entities/supply.entity';
 import { InventoryTransaction } from '../inventory/entities/inventory-transaction.entity';
 import { ProductSize } from '../products/entities/product-size.entity';
 import { EstimateHistory } from '../production/entities/estimate-history.entity';
@@ -33,6 +35,8 @@ export class OrdersService {
     private recipesRepository: Repository<Recipe>,
     @InjectRepository(Ingredient)
     private ingredientsRepository: Repository<Ingredient>,
+    @InjectRepository(Supply)
+    private suppliesRepository: Repository<Supply>,
     @InjectRepository(InventoryTransaction)
     private inventoryTxRepository: Repository<InventoryTransaction>,
     @InjectRepository(EstimateHistory)
@@ -96,6 +100,26 @@ export class OrdersService {
       });
     }
 
+    // Validate và tạo supply items
+    const supplyItems: Partial<OrderSupplyItem>[] = [];
+    if (dto.supplyItems && dto.supplyItems.length > 0) {
+      for (const si of dto.supplyItems) {
+        const supply = await this.suppliesRepository.findOne({ where: { id: si.supplyId } });
+        if (!supply) {
+          throw new BadRequestException(`Vật tư ${si.supplyId} không tồn tại`);
+        }
+        const unitPrice = Number(si.unitPrice ?? 0);
+        const subtotal = unitPrice * si.quantity;
+        totalAmount += subtotal;
+        supplyItems.push({
+          supplyId: si.supplyId,
+          quantity: si.quantity,
+          unitPrice,
+          subtotal,
+        });
+      }
+    }
+
     const order = this.ordersRepository.create({
       orderNumber,
       customerName: dto.customerName,
@@ -104,8 +128,10 @@ export class OrdersService {
       notes: dto.notes,
       status: 'pending',
       totalAmount,
+      deductStock: dto.deductStock !== false, // default true
       createdBy: userId,
       items: orderItems as OrderItem[],
+      supplyItems: supplyItems as OrderSupplyItem[],
     });
 
     const saved = await this.ordersRepository.save(order);
@@ -122,7 +148,9 @@ export class OrdersService {
     const queryBuilder = this.ordersRepository
       .createQueryBuilder('order')
       .leftJoinAndSelect('order.items', 'items')
-      .leftJoinAndSelect('items.product', 'product');
+      .leftJoinAndSelect('items.product', 'product')
+      .leftJoinAndSelect('order.supplyItems', 'supplyItems')
+      .leftJoinAndSelect('supplyItems.supply', 'supply');
 
     if (status) {
       queryBuilder.andWhere('order.status = :status', { status });
@@ -163,7 +191,7 @@ export class OrdersService {
   async findOne(id: string): Promise<Order> {
     const order = await this.ordersRepository.findOne({
       where: { id },
-      relations: ['items', 'items.product', 'items.size'],
+      relations: ['items', 'items.product', 'items.size', 'supplyItems', 'supplyItems.supply'],
     });
 
     if (!order) {
@@ -216,178 +244,203 @@ export class OrdersService {
     await queryRunner.startTransaction();
 
     try {
-      // Bước 1: Tính tổng nguyên liệu cần dùng cho toàn bộ đơn hàng
-      const ingredientRequirements = new Map<
-        string,
-        { ingredient: Ingredient; totalNeeded: number }
-      >();
+      // Chỉ tính định lượng + trừ kho khi đơn có xuất kho
+      if (order.deductStock) {
+        // Bước 1: Tính tổng nguyên liệu cần dùng cho toàn bộ đơn hàng
+        const ingredientRequirements = new Map<
+          string,
+          { ingredient: Ingredient; totalNeeded: number }
+        >();
 
-      for (const orderItem of order.items) {
-        // Tìm recipe theo product + size (hoặc mặc định nếu không có size)
-        const sizeId = orderItem.sizeId || null;
-        const recipeWhere: any = { productId: orderItem.productId };
-        if (sizeId) {
-          recipeWhere.sizeId = sizeId;
-        } else {
-          recipeWhere.sizeId = null; // IsNull trong queryRunner
+        for (const orderItem of order.items) {
+          // Tìm recipe theo product + size (hoặc mặc định nếu không có size)
+          const sizeId = orderItem.sizeId || null;
+          const recipeWhere: any = { productId: orderItem.productId };
+          if (sizeId) {
+            recipeWhere.sizeId = sizeId;
+          } else {
+            recipeWhere.sizeId = null; // IsNull trong queryRunner
+          }
+
+          let recipe = await queryRunner.manager.findOne(Recipe, {
+            where: recipeWhere,
+            relations: ['items', 'items.ingredient'],
+          });
+
+          // Nếu không tìm thấy recipe cho size cụ thể, thử tìm recipe mặc định
+          if (!recipe && sizeId) {
+            recipe = await queryRunner.manager.findOne(Recipe, {
+              where: { productId: orderItem.productId, sizeId: null as any },
+              relations: ['items', 'items.ingredient'],
+            });
+          }
+
+          if (!recipe) {
+            const sizeName = orderItem.size ? ` (${orderItem.size.name})` : '';
+            throw new BadRequestException(
+              `Sản phẩm "${orderItem.product.name}"${sizeName} chưa có công thức. Không thể xác nhận đơn.`,
+            );
+          }
+
+          // Tính nguyên liệu = recipe quantity * order quantity
+          for (const recipeItem of recipe.items) {
+            const needed = Number(recipeItem.quantity) * orderItem.quantity;
+            const existing = ingredientRequirements.get(recipeItem.ingredientId);
+
+            if (existing) {
+              existing.totalNeeded += needed;
+            } else {
+              ingredientRequirements.set(recipeItem.ingredientId, {
+                ingredient: recipeItem.ingredient,
+                totalNeeded: needed,
+              });
+            }
+          }
         }
 
-        let recipe = await queryRunner.manager.findOne(Recipe, {
-          where: recipeWhere,
-          relations: ['items', 'items.ingredient'],
-        });
-
-        // Nếu không tìm thấy recipe cho size cụ thể, thử tìm recipe mặc định
-        if (!recipe && sizeId) {
-          recipe = await queryRunner.manager.findOne(Recipe, {
-            where: { productId: orderItem.productId, sizeId: null as any },
-            relations: ['items', 'items.ingredient'],
+        // Bước 2: Lưu snapshot lịch sử xuất định lượng (trước khi trừ kho)
+        const productSummaries: {
+          productId: string;
+          productName: string;
+          sizeName?: string;
+          quantity: number;
+        }[] = [];
+        for (const orderItem of order.items) {
+          productSummaries.push({
+            productId: orderItem.productId,
+            productName: orderItem.product.name,
+            sizeName: orderItem.size?.name,
+            quantity: orderItem.quantity,
           });
         }
 
-        if (!recipe) {
-          const sizeName = orderItem.size ? ` (${orderItem.size.name})` : '';
-          throw new BadRequestException(
-            `Sản phẩm "${orderItem.product.name}"${sizeName} chưa có công thức. Không thể xác nhận đơn.`,
-          );
+        const ingredientSnapshots: {
+          ingredientId: string;
+          ingredientName: string;
+          unit: string;
+          totalNeeded: number;
+          currentStock: number;
+          shortage: number;
+          costPerUnit: number;
+          estimatedCost: number;
+        }[] = [];
+        let totalEstimatedCost = 0;
+        let hasShortage = false;
+
+        for (const [ingId, req] of ingredientRequirements) {
+          const freshIng = await queryRunner.manager.findOne(Ingredient, {
+            where: { id: ingId },
+          });
+          const currentStock = Number(freshIng?.currentStock ?? 0);
+          const costPerUnit = Number(freshIng?.costPerUnit ?? 0);
+          const shortage = Math.max(0, req.totalNeeded - currentStock);
+          const estimatedCost = req.totalNeeded * costPerUnit;
+          if (shortage > 0) hasShortage = true;
+          totalEstimatedCost += estimatedCost;
+
+          ingredientSnapshots.push({
+            ingredientId: ingId,
+            ingredientName: req.ingredient.name,
+            unit: req.ingredient.unit,
+            totalNeeded: req.totalNeeded,
+            currentStock,
+            shortage,
+            costPerUnit,
+            estimatedCost,
+          });
         }
 
-        // Tính nguyên liệu = recipe quantity * order quantity
-        for (const recipeItem of recipe.items) {
-          const needed = Number(recipeItem.quantity) * orderItem.quantity;
-          const existing = ingredientRequirements.get(recipeItem.ingredientId);
+        ingredientSnapshots.sort((a, b) => b.shortage - a.shortage);
 
-          if (existing) {
-            existing.totalNeeded += needed;
-          } else {
-            ingredientRequirements.set(recipeItem.ingredientId, {
-              ingredient: recipeItem.ingredient,
-              totalNeeded: needed,
-            });
+        const estimateHistory = this.estimateHistoryRepository.create({
+          type: 'ORDER',
+          orderId: order.id,
+          orderNumber: order.orderNumber,
+          products: productSummaries,
+          ingredients: ingredientSnapshots,
+          totalEstimatedCost,
+          hasShortage,
+          createdBy: userId || undefined,
+          notes: `Xuất định lượng cho đơn hàng ${order.orderNumber}`,
+        });
+        await queryRunner.manager.save(estimateHistory);
+
+        // Bước 3: Trừ kho nguyên liệu + vật tư
+        const insufficientStock: string[] = [];
+
+        // 3a. Trừ kho nguyên liệu
+        for (const [ingredientId, req] of ingredientRequirements) {
+          const ingredient = await queryRunner.manager
+            .createQueryBuilder(Ingredient, 'ingredient')
+            .setLock('pessimistic_write')
+            .where('ingredient.id = :id', { id: ingredientId })
+            .getOne();
+
+          if (!ingredient) {
+            throw new BadRequestException(`Ingredient ${ingredientId} not found`);
+          }
+
+          const currentStock = Number(ingredient.currentStock);
+
+          if (currentStock < req.totalNeeded) {
+            insufficientStock.push(
+              `${req.ingredient.name}: cần ${req.totalNeeded}${req.ingredient.unit}, còn ${currentStock}${req.ingredient.unit}`,
+            );
+            continue;
+          }
+
+          ingredient.currentStock = currentStock - req.totalNeeded;
+          await queryRunner.manager.save(ingredient);
+
+          const tx = this.inventoryTxRepository.create({
+            ingredientId,
+            type: 'OUT',
+            quantity: req.totalNeeded,
+            reason: 'ORDER',
+            referenceId: order.id,
+            createdBy: userId,
+            notes: `Order ${order.orderNumber}`,
+          });
+          await queryRunner.manager.save(tx);
+        }
+
+        // 3b. Trừ kho vật tư tiêu hao
+        if (order.supplyItems && order.supplyItems.length > 0) {
+          for (const supplyItem of order.supplyItems) {
+            const supply = await queryRunner.manager
+              .createQueryBuilder(Supply, 'supply')
+              .setLock('pessimistic_write')
+              .where('supply.id = :id', { id: supplyItem.supplyId })
+              .getOne();
+
+            if (!supply) {
+              throw new BadRequestException(`Vật tư ${supplyItem.supplyId} không tồn tại`);
+            }
+
+            const currentStock = Number(supply.currentStock);
+            const needed = Number(supplyItem.quantity);
+
+            if (currentStock < needed) {
+              insufficientStock.push(
+                `${supply.name}: cần ${needed} ${supply.unit}, còn ${currentStock} ${supply.unit}`,
+              );
+              continue;
+            }
+
+            supply.currentStock = currentStock - needed;
+            await queryRunner.manager.save(supply);
           }
         }
-      }
 
-      // Bước 2: Lưu snapshot lịch sử xuất định lượng (trước khi trừ kho)
-      const productSummaries: {
-        productId: string;
-        productName: string;
-        sizeName?: string;
-        quantity: number;
-      }[] = [];
-      for (const orderItem of order.items) {
-        productSummaries.push({
-          productId: orderItem.productId,
-          productName: orderItem.product.name,
-          sizeName: orderItem.size?.name,
-          quantity: orderItem.quantity,
-        });
-      }
-
-      const ingredientSnapshots: {
-        ingredientId: string;
-        ingredientName: string;
-        unit: string;
-        totalNeeded: number;
-        currentStock: number;
-        shortage: number;
-        costPerUnit: number;
-        estimatedCost: number;
-      }[] = [];
-      let totalEstimatedCost = 0;
-      let hasShortage = false;
-
-      for (const [ingId, req] of ingredientRequirements) {
-        const freshIng = await queryRunner.manager.findOne(Ingredient, {
-          where: { id: ingId },
-        });
-        const currentStock = Number(freshIng?.currentStock ?? 0);
-        const costPerUnit = Number(freshIng?.costPerUnit ?? 0);
-        const shortage = Math.max(0, req.totalNeeded - currentStock);
-        const estimatedCost = req.totalNeeded * costPerUnit;
-        if (shortage > 0) hasShortage = true;
-        totalEstimatedCost += estimatedCost;
-
-        ingredientSnapshots.push({
-          ingredientId: ingId,
-          ingredientName: req.ingredient.name,
-          unit: req.ingredient.unit,
-          totalNeeded: req.totalNeeded,
-          currentStock,
-          shortage,
-          costPerUnit,
-          estimatedCost,
-        });
-      }
-
-      ingredientSnapshots.sort((a, b) => b.shortage - a.shortage);
-
-      const estimateHistory = this.estimateHistoryRepository.create({
-        type: 'ORDER',
-        orderId: order.id,
-        orderNumber: order.orderNumber,
-        products: productSummaries,
-        ingredients: ingredientSnapshots,
-        totalEstimatedCost,
-        hasShortage,
-        createdBy: userId || undefined,
-        notes: `Xuất định lượng cho đơn hàng ${order.orderNumber}`,
-      });
-      await queryRunner.manager.save(estimateHistory);
-
-      // Bước 3: Kiểm tra tồn kho và trừ kho
-      const insufficientStock: string[] = [];
-
-      for (const [ingredientId, req] of ingredientRequirements) {
-        // Lock row để tránh race condition (SELECT FOR UPDATE)
-        const ingredient = await queryRunner.manager
-          .createQueryBuilder(Ingredient, 'ingredient')
-          .setLock('pessimistic_write')
-          .where('ingredient.id = :id', { id: ingredientId })
-          .getOne();
-
-        if (!ingredient) {
-          throw new BadRequestException(
-            `Ingredient ${ingredientId} not found`,
-          );
+        if (insufficientStock.length > 0) {
+          throw new BadRequestException({
+            message: 'Không đủ tồn kho',
+            errors: insufficientStock,
+          });
         }
-
-        const currentStock = Number(ingredient.currentStock);
-
-        if (currentStock < req.totalNeeded) {
-          insufficientStock.push(
-            `${req.ingredient.name}: cần ${req.totalNeeded}${req.ingredient.unit}, ` +
-              `còn ${currentStock}${req.ingredient.unit}`,
-          );
-          continue;
-        }
-
-        // Trừ kho
-        ingredient.currentStock = currentStock - req.totalNeeded;
-        await queryRunner.manager.save(ingredient);
-
-        // Ghi inventory transaction
-        const tx = this.inventoryTxRepository.create({
-          ingredientId,
-          type: 'OUT',
-          quantity: req.totalNeeded,
-          reason: 'ORDER',
-          referenceId: order.id,
-          createdBy: userId,
-          notes: `Order ${order.orderNumber}`,
-        });
-        await queryRunner.manager.save(tx);
       }
 
-      // Nếu thiếu nguyên liệu -> rollback
-      if (insufficientStock.length > 0) {
-        throw new BadRequestException({
-          message: 'Insufficient stock for the following ingredients',
-          errors: insufficientStock,
-        });
-      }
-
-      // Bước 4: Cập nhật trạng thái đơn hàng
+      // Cập nhật trạng thái đơn hàng
       order.status = 'confirmed';
       await queryRunner.manager.save(order);
 
@@ -395,7 +448,7 @@ export class OrdersService {
       await queryRunner.commitTransaction();
 
       this.logger.log(
-        `Order ${order.orderNumber} confirmed. Stock deducted for ${ingredientRequirements.size} ingredients.`,
+        `Order ${order.orderNumber} confirmed.${order.deductStock ? ' Stock deducted.' : ' No stock deduction (deductStock=false).'}`,
       );
 
       return this.findOne(order.id);
