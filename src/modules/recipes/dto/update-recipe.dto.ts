@@ -6,16 +6,20 @@ import {
   IsNumber,
   Min,
   IsUUID,
-  IsNotEmpty,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { ApiPropertyOptional, ApiProperty } from '@nestjs/swagger';
 
 export class UpdateRecipeItemDto {
-  @ApiProperty({ description: 'Ingredient ID' })
+  @ApiPropertyOptional({ description: 'Ingredient ID (bắt buộc nếu không có supplyId)' })
+  @IsOptional()
   @IsUUID()
-  @IsNotEmpty()
-  ingredientId: string;
+  ingredientId?: string;
+
+  @ApiPropertyOptional({ description: 'Supply ID (bắt buộc nếu không có ingredientId)' })
+  @IsOptional()
+  @IsUUID()
+  supplyId?: string;
 
   @ApiProperty({ example: 150 })
   @IsNumber()

@@ -65,14 +65,9 @@ export class ProductsService {
   async update(id: string, dto: UpdateProductDto): Promise<Product> {
     const product = await this.findOne(id);
 
-    // Cập nhật fields đơn giản
-    const { sizes, ...rest } = dto;
-    Object.assign(product, rest);
-
-    // Nếu có sizes mới → xử lý cascade
-    if (sizes !== undefined) {
-      product.sizes = sizes as any;
-    }
+    // merge() tạo đúng entity instance cho cả nested relations (sizes)
+    // → TypeORM tự gán product_id khi cascade insert size mới
+    this.productsRepository.merge(product, dto as any);
 
     const updated = await this.productsRepository.save(product);
     this.logger.log(`Product updated: ${updated.name} (${updated.id})`);

@@ -54,6 +54,9 @@ export class Order {
   @Column({ name: 'deduct_stock', type: 'boolean', default: true })
   deductStock: boolean;
 
+  @Column({ name: 'order_date', type: 'timestamptz', nullable: true })
+  orderDate: Date;
+
   @Column({ name: 'created_by', nullable: true })
   createdBy: string;
 

@@ -46,7 +46,8 @@ export class RecipesService {
       notes: dto.notes,
       items: dto.items.map((item) =>
         this.recipeItemsRepository.create({
-          ingredientId: item.ingredientId,
+          ingredientId: item.ingredientId || null,
+          supplyId: item.supplyId || null,
           quantity: item.quantity,
         }),
       ),
@@ -59,14 +60,14 @@ export class RecipesService {
 
   async findAll(): Promise<Recipe[]> {
     return this.recipesRepository.find({
-      relations: ['product', 'size', 'items', 'items.ingredient'],
+      relations: ['product', 'size', 'items', 'items.ingredient', 'items.supply'],
     });
   }
 
   async findOne(id: string): Promise<Recipe> {
     const recipe = await this.recipesRepository.findOne({
       where: { id },
-      relations: ['product', 'size', 'items', 'items.ingredient'],
+      relations: ['product', 'size', 'items', 'items.ingredient', 'items.supply'],
     });
     if (!recipe) {
       throw new NotFoundException(`Recipe #${id} not found`);
@@ -77,7 +78,7 @@ export class RecipesService {
   async findByProductId(productId: string): Promise<Recipe[]> {
     return this.recipesRepository.find({
       where: { productId },
-      relations: ['size', 'items', 'items.ingredient'],
+      relations: ['size', 'items', 'items.ingredient', 'items.supply'],
       order: { sizeId: 'ASC' },
     });
   }
@@ -88,7 +89,7 @@ export class RecipesService {
         productId,
         sizeId: sizeId ?? (IsNull() as any),
       },
-      relations: ['items', 'items.ingredient'],
+      relations: ['items', 'items.ingredient', 'items.supply'],
     });
   }
 
@@ -102,7 +103,8 @@ export class RecipesService {
       recipe.items = dto.items.map((item) =>
         this.recipeItemsRepository.create({
           recipeId: id,
-          ingredientId: item.ingredientId,
+          ingredientId: item.ingredientId || null,
+          supplyId: item.supplyId || null,
           quantity: item.quantity,
         }),
       );

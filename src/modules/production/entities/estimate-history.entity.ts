@@ -34,7 +34,8 @@ export class EstimateHistory {
 
   @Column({ type: 'jsonb' })
   ingredients: {
-    ingredientId: string;
+    ingredientId?: string;
+    supplyId?: string;
     ingredientName: string;
     unit: string;
     totalNeeded: number;

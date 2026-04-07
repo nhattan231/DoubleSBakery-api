@@ -85,6 +85,11 @@ export class CreateOrderDto {
   @IsBoolean()
   deductStock?: boolean;
 
+  @ApiPropertyOptional({ description: 'Ngày tạo đơn (YYYY-MM-DD)', example: '2026-04-07' })
+  @IsOptional()
+  @IsString()
+  orderDate?: string;
+
   @ApiProperty({ type: [CreateOrderItemDto] })
   @IsArray()
   @ValidateNested({ each: true })

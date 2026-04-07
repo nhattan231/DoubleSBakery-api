@@ -8,10 +8,23 @@ import { Repository, IsNull } from 'typeorm';
 import { Recipe } from '../recipes/entities/recipe.entity';
 import { Product } from '../products/entities/product.entity';
 import { Ingredient } from '../ingredients/entities/ingredient.entity';
+import { Supply } from '../supplies/entities/supply.entity';
 import { EstimateHistory } from './entities/estimate-history.entity';
 import { ProductionEstimateDto } from './dto/estimate.dto';
 import { EstimateHistoryQueryDto } from './dto/estimate-history-query.dto';
 import { PaginationResult } from '../../common/interfaces/pagination.interface';
+
+export interface EstimateItemResult {
+  ingredientId?: string;
+  supplyId?: string;
+  ingredientName: string;
+  unit: string;
+  totalNeeded: number;
+  currentStock: number;
+  shortage: number;
+  costPerUnit: number;
+  estimatedCost: number;
+}
 
 export interface EstimateResult {
   products: {
@@ -20,16 +33,7 @@ export interface EstimateResult {
     sizeName?: string;
     quantity: number;
   }[];
-  ingredients: {
-    ingredientId: string;
-    ingredientName: string;
-    unit: string;
-    totalNeeded: number;
-    currentStock: number;
-    shortage: number;
-    costPerUnit: number;
-    estimatedCost: number;
-  }[];
+  ingredients: EstimateItemResult[];
   totalEstimatedCost: number;
   hasShortage: boolean;
 }
@@ -45,6 +49,8 @@ export class ProductionService {
     private productsRepository: Repository<Product>,
     @InjectRepository(Ingredient)
     private ingredientsRepository: Repository<Ingredient>,
+    @InjectRepository(Supply)
+    private suppliesRepository: Repository<Supply>,
     @InjectRepository(EstimateHistory)
     private estimateHistoryRepository: Repository<EstimateHistory>,
   ) {}
@@ -54,6 +60,10 @@ export class ProductionService {
     const ingredientMap = new Map<
       string,
       { ingredient: Ingredient; totalNeeded: number }
+    >();
+    const supplyMap = new Map<
+      string,
+      { supply: Supply; totalNeeded: number }
     >();
 
     for (const item of dto.items) {
@@ -86,7 +96,7 @@ export class ProductionService {
           productId: item.productId,
           sizeId: sizeId ?? (IsNull() as any),
         },
-        relations: ['items', 'items.ingredient'],
+        relations: ['items', 'items.ingredient', 'items.supply'],
       });
 
       // Fallback: nếu không có recipe cho size cụ thể → dùng recipe mặc định
@@ -96,7 +106,7 @@ export class ProductionService {
             productId: item.productId,
             sizeId: IsNull() as any,
           },
-          relations: ['items', 'items.ingredient'],
+          relations: ['items', 'items.ingredient', 'items.supply'],
         });
       }
 
@@ -108,15 +118,27 @@ export class ProductionService {
 
       for (const recipeItem of recipe.items) {
         const needed = Number(recipeItem.quantity) * item.quantity;
-        const existing = ingredientMap.get(recipeItem.ingredientId);
 
-        if (existing) {
-          existing.totalNeeded += needed;
-        } else {
-          ingredientMap.set(recipeItem.ingredientId, {
-            ingredient: recipeItem.ingredient,
-            totalNeeded: needed,
-          });
+        if (recipeItem.ingredientId) {
+          const existing = ingredientMap.get(recipeItem.ingredientId);
+          if (existing) {
+            existing.totalNeeded += needed;
+          } else {
+            ingredientMap.set(recipeItem.ingredientId, {
+              ingredient: recipeItem.ingredient,
+              totalNeeded: needed,
+            });
+          }
+        } else if (recipeItem.supplyId) {
+          const existing = supplyMap.get(recipeItem.supplyId);
+          if (existing) {
+            existing.totalNeeded += needed;
+          } else {
+            supplyMap.set(recipeItem.supplyId, {
+              supply: recipeItem.supply,
+              totalNeeded: needed,
+            });
+          }
         }
       }
     }
@@ -125,6 +147,7 @@ export class ProductionService {
     let totalEstimatedCost = 0;
     let hasShortage = false;
 
+    // Tính nguyên liệu
     for (const [ingredientId, data] of ingredientMap) {
       const freshIngredient = await this.ingredientsRepository.findOne({
         where: { id: ingredientId },
@@ -142,6 +165,32 @@ export class ProductionService {
         ingredientId,
         ingredientName: data.ingredient.name,
         unit: data.ingredient.unit,
+        totalNeeded: data.totalNeeded,
+        currentStock,
+        shortage,
+        costPerUnit,
+        estimatedCost,
+      });
+    }
+
+    // Tính vật tư tiêu hao
+    for (const [supplyId, data] of supplyMap) {
+      const freshSupply = await this.suppliesRepository.findOne({
+        where: { id: supplyId },
+      });
+
+      const currentStock = Number(freshSupply?.currentStock ?? 0);
+      const costPerUnit = Number(freshSupply?.costPerUnit ?? 0);
+      const shortage = Math.max(0, data.totalNeeded - currentStock);
+      const estimatedCost = data.totalNeeded * costPerUnit;
+
+      if (shortage > 0) hasShortage = true;
+      totalEstimatedCost += estimatedCost;
+
+      ingredientResults.push({
+        supplyId,
+        ingredientName: data.supply.name,
+        unit: data.supply.unit,
         totalNeeded: data.totalNeeded,
         currentStock,
         shortage,

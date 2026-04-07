@@ -130,6 +130,7 @@ export class OrdersService {
       totalAmount,
       deductStock: dto.deductStock !== false, // default true
       createdBy: userId,
+      orderDate: dto.orderDate ? new Date(dto.orderDate) : undefined,
       items: orderItems as OrderItem[],
       supplyItems: supplyItems as OrderSupplyItem[],
     });
@@ -145,38 +146,44 @@ export class OrdersService {
   ): Promise<PaginationResult<Order>> {
     const { page = 1, limit = 20, status, search, startDate, endDate } = query;
 
+    // Convert sang timezone VN rồi cast DATE để so sánh ngày thuần
+    const dateExpr = "(COALESCE(ord.order_date, ord.created_at) AT TIME ZONE 'Asia/Ho_Chi_Minh')::DATE";
+
     const queryBuilder = this.ordersRepository
-      .createQueryBuilder('order')
-      .leftJoinAndSelect('order.items', 'items')
+      .createQueryBuilder('ord')
+      .addSelect(dateExpr, 'effective_date')
+      .leftJoinAndSelect('ord.items', 'items')
       .leftJoinAndSelect('items.product', 'product')
-      .leftJoinAndSelect('order.supplyItems', 'supplyItems')
+      .leftJoinAndSelect('ord.supplyItems', 'supplyItems')
       .leftJoinAndSelect('supplyItems.supply', 'supply');
 
     if (status) {
-      queryBuilder.andWhere('order.status = :status', { status });
+      queryBuilder.andWhere('ord.status = :status', { status });
     }
 
     if (search) {
       queryBuilder.andWhere(
-        '(order.orderNumber ILIKE :search OR order.customerName ILIKE :search OR order.phone ILIKE :search)',
+        '(ord.orderNumber ILIKE :search OR ord.customerName ILIKE :search OR ord.phone ILIKE :search)',
         { search: `%${search}%` },
       );
     }
 
     if (startDate) {
-      queryBuilder.andWhere('order.createdAt >= :startDate', {
-        startDate: `${startDate} 00:00:00`,
-      });
+      queryBuilder.andWhere(
+        `${dateExpr} >= :startDate`,
+        { startDate },
+      );
     }
 
     if (endDate) {
-      queryBuilder.andWhere('order.createdAt <= :endDate', {
-        endDate: `${endDate} 23:59:59`,
-      });
+      queryBuilder.andWhere(
+        `${dateExpr} <= :endDate`,
+        { endDate },
+      );
     }
 
     queryBuilder
-      .orderBy('order.createdAt', 'DESC')
+      .orderBy('effective_date', 'DESC')
       .skip((page - 1) * limit)
       .take(limit);
 
@@ -246,10 +253,14 @@ export class OrdersService {
     try {
       // Chỉ tính định lượng + trừ kho khi đơn có xuất kho
       if (order.deductStock) {
-        // Bước 1: Tính tổng nguyên liệu cần dùng cho toàn bộ đơn hàng
+        // Bước 1: Tính tổng nguyên liệu + vật tư cần dùng cho toàn bộ đơn hàng
         const ingredientRequirements = new Map<
           string,
           { ingredient: Ingredient; totalNeeded: number }
+        >();
+        const recipeSupplyRequirements = new Map<
+          string,
+          { supply: Supply; totalNeeded: number }
         >();
 
         for (const orderItem of order.items) {
@@ -264,14 +275,14 @@ export class OrdersService {
 
           let recipe = await queryRunner.manager.findOne(Recipe, {
             where: recipeWhere,
-            relations: ['items', 'items.ingredient'],
+            relations: ['items', 'items.ingredient', 'items.supply'],
           });
 
           // Nếu không tìm thấy recipe cho size cụ thể, thử tìm recipe mặc định
           if (!recipe && sizeId) {
             recipe = await queryRunner.manager.findOne(Recipe, {
               where: { productId: orderItem.productId, sizeId: null as any },
-              relations: ['items', 'items.ingredient'],
+              relations: ['items', 'items.ingredient', 'items.supply'],
             });
           }
 
@@ -282,18 +293,30 @@ export class OrdersService {
             );
           }
 
-          // Tính nguyên liệu = recipe quantity * order quantity
+          // Tính nguyên liệu + vật tư = recipe quantity * order quantity
           for (const recipeItem of recipe.items) {
             const needed = Number(recipeItem.quantity) * orderItem.quantity;
-            const existing = ingredientRequirements.get(recipeItem.ingredientId);
 
-            if (existing) {
-              existing.totalNeeded += needed;
-            } else {
-              ingredientRequirements.set(recipeItem.ingredientId, {
-                ingredient: recipeItem.ingredient,
-                totalNeeded: needed,
-              });
+            if (recipeItem.ingredientId) {
+              const existing = ingredientRequirements.get(recipeItem.ingredientId);
+              if (existing) {
+                existing.totalNeeded += needed;
+              } else {
+                ingredientRequirements.set(recipeItem.ingredientId, {
+                  ingredient: recipeItem.ingredient,
+                  totalNeeded: needed,
+                });
+              }
+            } else if (recipeItem.supplyId) {
+              const existing = recipeSupplyRequirements.get(recipeItem.supplyId);
+              if (existing) {
+                existing.totalNeeded += needed;
+              } else {
+                recipeSupplyRequirements.set(recipeItem.supplyId, {
+                  supply: recipeItem.supply,
+                  totalNeeded: needed,
+                });
+              }
             }
           }
         }
@@ -315,7 +338,8 @@ export class OrdersService {
         }
 
         const ingredientSnapshots: {
-          ingredientId: string;
+          ingredientId?: string;
+          supplyId?: string;
           ingredientName: string;
           unit: string;
           totalNeeded: number;
@@ -327,6 +351,7 @@ export class OrdersService {
         let totalEstimatedCost = 0;
         let hasShortage = false;
 
+        // Snapshot nguyên liệu
         for (const [ingId, req] of ingredientRequirements) {
           const freshIng = await queryRunner.manager.findOne(Ingredient, {
             where: { id: ingId },
@@ -342,6 +367,30 @@ export class OrdersService {
             ingredientId: ingId,
             ingredientName: req.ingredient.name,
             unit: req.ingredient.unit,
+            totalNeeded: req.totalNeeded,
+            currentStock,
+            shortage,
+            costPerUnit,
+            estimatedCost,
+          });
+        }
+
+        // Snapshot vật tư tiêu hao (từ công thức)
+        for (const [supId, req] of recipeSupplyRequirements) {
+          const freshSup = await queryRunner.manager.findOne(Supply, {
+            where: { id: supId },
+          });
+          const currentStock = Number(freshSup?.currentStock ?? 0);
+          const costPerUnit = Number(freshSup?.costPerUnit ?? 0);
+          const shortage = Math.max(0, req.totalNeeded - currentStock);
+          const estimatedCost = req.totalNeeded * costPerUnit;
+          if (shortage > 0) hasShortage = true;
+          totalEstimatedCost += estimatedCost;
+
+          ingredientSnapshots.push({
+            supplyId: supId,
+            ingredientName: req.supply.name,
+            unit: req.supply.unit,
             totalNeeded: req.totalNeeded,
             currentStock,
             shortage,
@@ -404,7 +453,32 @@ export class OrdersService {
           await queryRunner.manager.save(tx);
         }
 
-        // 3b. Trừ kho vật tư tiêu hao
+        // 3b. Trừ kho vật tư tiêu hao (từ công thức)
+        for (const [supplyId, req] of recipeSupplyRequirements) {
+          const supply = await queryRunner.manager
+            .createQueryBuilder(Supply, 'supply')
+            .setLock('pessimistic_write')
+            .where('supply.id = :id', { id: supplyId })
+            .getOne();
+
+          if (!supply) {
+            throw new BadRequestException(`Vật tư ${supplyId} không tồn tại`);
+          }
+
+          const currentStock = Number(supply.currentStock);
+
+          if (currentStock < req.totalNeeded) {
+            insufficientStock.push(
+              `${req.supply.name}: cần ${req.totalNeeded} ${req.supply.unit}, còn ${currentStock} ${req.supply.unit}`,
+            );
+            continue;
+          }
+
+          supply.currentStock = currentStock - req.totalNeeded;
+          await queryRunner.manager.save(supply);
+        }
+
+        // 3c. Trừ kho vật tư tiêu hao (từ đơn hàng - order supply items)
         if (order.supplyItems && order.supplyItems.length > 0) {
           for (const supplyItem of order.supplyItems) {
             const supply = await queryRunner.manager
