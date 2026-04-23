@@ -17,13 +17,25 @@ export class CategoriesService {
   ) {}
 
   async create(dto: CreateCategoryDto): Promise<Category> {
-    // Auto set sortOrder nếu không có
-    if (dto.sortOrder === undefined) {
+    // Auto set sortOrder nếu không có (max + 1)
+    if (dto.sortOrder === undefined || dto.sortOrder === null) {
       const maxSort = await this.categoryRepository
         .createQueryBuilder('c')
         .select('MAX(c.sort_order)', 'max')
         .getRawOne();
-      dto.sortOrder = (maxSort?.max || 0) + 1;
+      dto.sortOrder = (Number(maxSort?.max) || 0) + 1;
+    }
+
+    // Nếu isFeatured = true: tắt featured của tất cả category khác
+    if (dto.isFeatured === true) {
+      await this.categoryRepository
+        .createQueryBuilder()
+        .update(Category)
+        .set({ isFeatured: false, featuredBadgeText: null })
+        .execute();
+    } else if (dto.isFeatured === false) {
+      // Nếu tắt featured thì clear badge text cho data sạch
+      dto.featuredBadgeText = undefined;
     }
 
     const category = this.categoryRepository.create(dto);
@@ -48,6 +60,21 @@ export class CategoriesService {
 
   async update(id: string, dto: UpdateCategoryDto): Promise<Category> {
     const category = await this.findOne(id);
+
+    // Nếu bật isFeatured: tắt featured của tất cả category khác
+    if (dto.isFeatured === true) {
+      await this.categoryRepository
+        .createQueryBuilder()
+        .update(Category)
+        .set({ isFeatured: false, featuredBadgeText: null })
+        .where('id != :id', { id })
+        .execute();
+    } else if (dto.isFeatured === false) {
+      // Nếu tắt featured thì clear badge text
+      dto.featuredBadgeText = undefined;
+      category.featuredBadgeText = null;
+    }
+
     Object.assign(category, dto);
     const updated = await this.categoryRepository.save(category);
     this.logger.log(`Category updated: ${updated.name} (${updated.id})`);

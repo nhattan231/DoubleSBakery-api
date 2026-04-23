@@ -18,6 +18,7 @@ import { StoreSettingsModule } from './modules/store-settings/store-settings.mod
 import { CategoriesModule } from './modules/categories/categories.module';
 import { SuppliesModule } from './modules/supplies/supplies.module';
 import { EquipmentModule } from './modules/equipment/equipment.module';
+import { CvsModule } from './modules/cvs/cvs.module';
 
 @Module({
   imports: [
@@ -68,6 +69,7 @@ import { EquipmentModule } from './modules/equipment/equipment.module';
     CategoriesModule,
     SuppliesModule,
     EquipmentModule,
+    CvsModule,
   ],
 })
 export class AppModule {}
