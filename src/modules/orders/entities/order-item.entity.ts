@@ -34,7 +34,7 @@ export class OrderItem {
   @Column({ name: 'size_id', nullable: true })
   sizeId: string;
 
-  @ManyToOne(() => ProductSize, { eager: true, nullable: true })
+  @ManyToOne(() => ProductSize, { eager: true, nullable: true, onDelete: 'SET NULL' })
   @JoinColumn({ name: 'size_id' })
   size: ProductSize;
 

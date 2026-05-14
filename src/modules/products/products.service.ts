@@ -6,7 +6,11 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Product } from './entities/product.entity';
-import { CreateProductDto } from './dto/create-product.dto';
+import { ProductSize } from './entities/product-size.entity';
+import {
+  CreateProductDto,
+  CreateProductSizeDto,
+} from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 import { ProductQueryDto } from './dto/product-query.dto';
 import { PaginationResult } from '../../common/interfaces/pagination.interface';
@@ -18,6 +22,8 @@ export class ProductsService {
   constructor(
     @InjectRepository(Product)
     private productsRepository: Repository<Product>,
+    @InjectRepository(ProductSize)
+    private productSizesRepository: Repository<ProductSize>,
   ) {}
 
   async create(dto: CreateProductDto): Promise<Product> {
@@ -64,14 +70,58 @@ export class ProductsService {
 
   async update(id: string, dto: UpdateProductDto): Promise<Product> {
     const product = await this.findOne(id);
+    const { sizes, ...rest } = dto;
 
-    // merge() tạo đúng entity instance cho cả nested relations (sizes)
-    // → TypeORM tự gán product_id khi cascade insert size mới
-    this.productsRepository.merge(product, dto as any);
+    if (Object.keys(rest).length > 0) {
+      this.productsRepository.merge(product, rest as any);
+    }
+
+    // Không dùng orphanRemoval: TypeORM có thể UPDATE product_id = NULL (vi phạm NOT NULL).
+    // Xóa size không còn trong payload bằng remove() rồi gán lại collection.
+    if (sizes !== undefined) {
+      const keepIds = new Set(
+        sizes.map((s) => s.id).filter((id): id is string => Boolean(id)),
+      );
+      const toRemove = (product.sizes ?? []).filter((s) => !keepIds.has(s.id));
+      if (toRemove.length > 0) {
+        await this.productSizesRepository.remove(toRemove);
+      }
+      product.sizes = this.buildSizesForUpdate(product, sizes);
+    }
 
     const updated = await this.productsRepository.save(product);
     this.logger.log(`Product updated: ${updated.name} (${updated.id})`);
     return this.findOne(updated.id);
+  }
+
+  /** Giữ entity cũ (cùng id) để UPDATE; tạo mới khi không khớp id → phần bị thiếu bị loại khỏi collection */
+  private buildSizesForUpdate(
+    product: Product,
+    incoming: CreateProductSizeDto[],
+  ): ProductSize[] {
+    const existingById = new Map(
+      (product.sizes ?? []).map((s) => [s.id, s]),
+    );
+
+    return incoming.map((row) => {
+      if (row.id && existingById.has(row.id)) {
+        const entity = existingById.get(row.id)!;
+        entity.name = row.name;
+        entity.price = row.price;
+        if (row.sortOrder !== undefined) entity.sortOrder = row.sortOrder;
+        if (row.isActive !== undefined) entity.isActive = row.isActive;
+        return entity;
+      }
+
+      return this.productsRepository.manager.create(ProductSize, {
+        name: row.name,
+        price: row.price,
+        sortOrder: row.sortOrder ?? 0,
+        isActive: row.isActive ?? true,
+        productId: product.id,
+        product,
+      });
+    });
   }
 
   async remove(id: string): Promise<void> {

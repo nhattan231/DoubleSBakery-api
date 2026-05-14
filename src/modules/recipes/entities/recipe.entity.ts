@@ -37,7 +37,7 @@ export class Recipe {
   @Column({ name: 'size_id', nullable: true })
   sizeId: string | null;
 
-  @ManyToOne(() => ProductSize, { nullable: true, eager: true })
+  @ManyToOne(() => ProductSize, { nullable: true, eager: true, onDelete: 'SET NULL' })
   @JoinColumn({ name: 'size_id' })
   size: ProductSize | null;
 
