@@ -12,6 +12,7 @@ import {
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
 import { PurchaseOrdersService } from './purchase-orders.service';
 import { CreatePurchaseOrderDto } from './dto/create-purchase-order.dto';
+import { UpdatePurchaseOrderDto } from './dto/update-purchase-order.dto';
 import { UpdatePurchaseOrderStatusDto } from './dto/update-purchase-order-status.dto';
 import { PaginationDto } from '../../common/dto/pagination.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -43,6 +44,15 @@ export class PurchaseOrdersController {
   @ApiOperation({ summary: 'Get purchase order by ID' })
   findOne(@Param('id', ParseUUIDPipe) id: string) {
     return this.purchaseOrdersService.findOne(id);
+  }
+
+  @Patch(':id')
+  @ApiOperation({ summary: 'Update entire purchase order (draft or confirmed only)' })
+  update(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdatePurchaseOrderDto,
+  ) {
+    return this.purchaseOrdersService.update(id, dto);
   }
 
   @Patch(':id/status')

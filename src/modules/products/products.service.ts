@@ -76,15 +76,13 @@ export class ProductsService {
       this.productsRepository.merge(product, rest as any);
     }
 
-    // Không dùng orphanRemoval: TypeORM có thể UPDATE product_id = NULL (vi phạm NOT NULL).
-    // Xóa size không còn trong payload bằng remove() rồi gán lại collection.
     if (sizes !== undefined) {
-      const keepIds = new Set(
-        sizes.map((s) => s.id).filter((id): id is string => Boolean(id)),
+      const incomingIds = new Set(
+        sizes.filter((s) => s.id).map((s) => s.id!),
       );
-      const toRemove = (product.sizes ?? []).filter((s) => !keepIds.has(s.id));
-      if (toRemove.length > 0) {
-        await this.productSizesRepository.remove(toRemove);
+      const removed = (product.sizes ?? []).filter((s) => !incomingIds.has(s.id));
+      if (removed.length > 0) {
+        await this.productSizesRepository.remove(removed);
       }
       product.sizes = this.buildSizesForUpdate(product, sizes);
     }
@@ -113,13 +111,12 @@ export class ProductsService {
         return entity;
       }
 
-      return this.productsRepository.manager.create(ProductSize, {
+      return this.productSizesRepository.create({
+        productId: product.id,
         name: row.name,
         price: row.price,
         sortOrder: row.sortOrder ?? 0,
         isActive: row.isActive ?? true,
-        productId: product.id,
-        product,
       });
     });
   }

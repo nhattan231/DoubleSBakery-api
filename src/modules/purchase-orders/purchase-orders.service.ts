@@ -13,6 +13,7 @@ import { Supply } from '../supplies/entities/supply.entity';
 import { Equipment } from '../equipment/entities/equipment.entity';
 import { InventoryTransaction } from '../inventory/entities/inventory-transaction.entity';
 import { CreatePurchaseOrderDto } from './dto/create-purchase-order.dto';
+import { UpdatePurchaseOrderDto } from './dto/update-purchase-order.dto';
 import { UpdatePurchaseOrderStatusDto } from './dto/update-purchase-order-status.dto';
 import { PaginationDto } from '../../common/dto/pagination.dto';
 import { PaginationResult } from '../../common/interfaces/pagination.interface';
@@ -25,6 +26,8 @@ export class PurchaseOrdersService {
   constructor(
     @InjectRepository(PurchaseOrder)
     private poRepository: Repository<PurchaseOrder>,
+    @InjectRepository(PurchaseOrderItem)
+    private poItemsRepository: Repository<PurchaseOrderItem>,
     @InjectRepository(Ingredient)
     private ingredientsRepository: Repository<Ingredient>,
     @InjectRepository(Supply)
@@ -41,14 +44,59 @@ export class PurchaseOrdersService {
     userId?: string,
   ): Promise<PurchaseOrder> {
     const poNumber = generateOrderNumber('PO');
+    const { items, totalCost } = await this.buildItemsFromDto(dto);
 
+    const po = this.poRepository.create({
+      poNumber,
+      supplierId: dto.supplierId,
+      notes: dto.notes,
+      status: 'draft',
+      totalCost,
+      createdBy: userId,
+      items: items as PurchaseOrderItem[],
+    });
+
+    const saved = await this.poRepository.save(po);
+    this.logger.log(`Purchase order created: ${poNumber}`);
+    return this.findOne(saved.id);
+  }
+
+  /**
+   * Cập nhật toàn bộ phiếu nhập — chỉ khi draft hoặc confirmed (chưa nhập kho)
+   */
+  async update(id: string, dto: UpdatePurchaseOrderDto): Promise<PurchaseOrder> {
+    const po = await this.findOne(id);
+
+    if (po.status !== 'draft' && po.status !== 'confirmed') {
+      throw new BadRequestException(
+        'Chỉ có thể sửa phiếu nhập ở trạng thái "Nháp" hoặc "Đã xác nhận"',
+      );
+    }
+
+    const { items, totalCost } = await this.buildItemsFromDto(dto);
+
+    await this.poItemsRepository.delete({ purchaseOrderId: id });
+
+    po.supplierId = dto.supplierId ?? null as any;
+    po.notes = dto.notes ?? null as any;
+    po.totalCost = totalCost;
+    po.items = items as PurchaseOrderItem[];
+
+    await this.poRepository.save(po);
+    this.logger.log(`Purchase order updated: ${po.poNumber}, total: ${totalCost}`);
+    return this.findOne(id);
+  }
+
+  private async buildItemsFromDto(dto: CreatePurchaseOrderDto): Promise<{
+    items: Partial<PurchaseOrderItem>[];
+    totalCost: number;
+  }> {
     let totalCost = 0;
     const items: Partial<PurchaseOrderItem>[] = [];
 
     for (const item of dto.items) {
       const itemType = item.itemType || 'ingredient';
 
-      // Validate referenced entity exists
       if (itemType === 'ingredient') {
         if (!item.ingredientId) {
           throw new BadRequestException('ingredientId is required for ingredient items');
@@ -95,19 +143,7 @@ export class PurchaseOrdersService {
       });
     }
 
-    const po = this.poRepository.create({
-      poNumber,
-      supplierId: dto.supplierId,
-      notes: dto.notes,
-      status: 'draft',
-      totalCost,
-      createdBy: userId,
-      items: items as PurchaseOrderItem[],
-    });
-
-    const saved = await this.poRepository.save(po);
-    this.logger.log(`Purchase order created: ${poNumber}`);
-    return this.findOne(saved.id);
+    return { items, totalCost };
   }
 
   async findAll(pagination: PaginationDto): Promise<PaginationResult<PurchaseOrder>> {

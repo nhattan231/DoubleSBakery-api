@@ -17,6 +17,7 @@ import { InventoryTransaction } from '../inventory/entities/inventory-transactio
 import { ProductSize } from '../products/entities/product-size.entity';
 import { EstimateHistory } from '../production/entities/estimate-history.entity';
 import { CreateOrderDto } from './dto/create-order.dto';
+import { UpdateOrderDto } from './dto/update-order.dto';
 import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
 import { OrderQueryDto } from './dto/order-query.dto';
 import { PaginationResult } from '../../common/interfaces/pagination.interface';
@@ -29,6 +30,10 @@ export class OrdersService {
   constructor(
     @InjectRepository(Order)
     private ordersRepository: Repository<Order>,
+    @InjectRepository(OrderItem)
+    private orderItemsRepository: Repository<OrderItem>,
+    @InjectRepository(OrderSupplyItem)
+    private orderSupplyItemsRepository: Repository<OrderSupplyItem>,
     @InjectRepository(Product)
     private productsRepository: Repository<Product>,
     @InjectRepository(Recipe)
@@ -49,76 +54,8 @@ export class OrdersService {
    */
   async create(dto: CreateOrderDto, userId?: string): Promise<Order> {
     const orderNumber = generateOrderNumber('ORD');
-
-    // Validate products và tính giá
-    const orderItems: Partial<OrderItem>[] = [];
-    let totalAmount = 0;
-
-    for (const item of dto.items) {
-      const product = await this.productsRepository.findOne({
-        where: { id: item.productId, status: 'active' },
-      });
-
-      if (!product) {
-        throw new BadRequestException(
-          `Sản phẩm ${item.productId} không tồn tại hoặc ngừng bán`,
-        );
-      }
-
-      // Nếu có sizeId → lấy giá từ size, không thì lấy giá mặc định
-      let originalPrice = Number(product.price);
-      let sizeId: string | undefined;
-
-      if (item.sizeId) {
-        const size = product.sizes?.find((s) => s.id === item.sizeId);
-        if (!size) {
-          throw new BadRequestException(
-            `Size ${item.sizeId} không tồn tại cho sản phẩm "${product.name}"`,
-          );
-        }
-        originalPrice = Number(size.price);
-        sizeId = size.id;
-      }
-
-      // Nếu là món tặng → dùng customPrice (mặc định 0), ngược lại dùng giá gốc
-      const isGift = item.isGift || false;
-      const unitPrice = isGift
-        ? Number(item.customPrice ?? 0)
-        : originalPrice;
-
-      const subtotal = unitPrice * item.quantity;
-      totalAmount += subtotal;
-
-      orderItems.push({
-        productId: item.productId,
-        sizeId,
-        quantity: item.quantity,
-        unitPrice,
-        subtotal,
-        isGift,
-        customPrice: isGift ? Number(item.customPrice ?? 0) : undefined,
-      });
-    }
-
-    // Validate và tạo supply items
-    const supplyItems: Partial<OrderSupplyItem>[] = [];
-    if (dto.supplyItems && dto.supplyItems.length > 0) {
-      for (const si of dto.supplyItems) {
-        const supply = await this.suppliesRepository.findOne({ where: { id: si.supplyId } });
-        if (!supply) {
-          throw new BadRequestException(`Vật tư ${si.supplyId} không tồn tại`);
-        }
-        const unitPrice = Number(si.unitPrice ?? 0);
-        const subtotal = unitPrice * si.quantity;
-        totalAmount += subtotal;
-        supplyItems.push({
-          supplyId: si.supplyId,
-          quantity: si.quantity,
-          unitPrice,
-          subtotal,
-        });
-      }
-    }
+    const { orderItems, supplyItems, totalAmount } =
+      await this.buildLineItemsFromDto(dto);
 
     const order = this.ordersRepository.create({
       orderNumber,
@@ -139,6 +76,115 @@ export class OrdersService {
     this.logger.log(`Order created: ${orderNumber}, total: ${totalAmount}`);
 
     return this.findOne(saved.id);
+  }
+
+  /**
+   * Cập nhật toàn bộ đơn hàng — chỉ khi status = pending (chưa trừ kho)
+   */
+  async update(id: string, dto: UpdateOrderDto): Promise<Order> {
+    const order = await this.findOne(id);
+
+    if (order.status !== 'pending') {
+      throw new BadRequestException(
+        'Chỉ có thể sửa đơn hàng ở trạng thái "Chờ xác nhận"',
+      );
+    }
+
+    const { orderItems, supplyItems, totalAmount } =
+      await this.buildLineItemsFromDto(dto);
+
+    await this.orderItemsRepository.delete({ orderId: id });
+    await this.orderSupplyItemsRepository.delete({ orderId: id });
+
+    order.customerName = dto.customerName;
+    order.phone = dto.phone ?? null as any;
+    order.address = dto.address ?? null as any;
+    order.notes = dto.notes ?? null as any;
+    order.deductStock = dto.deductStock !== false;
+    order.orderDate = dto.orderDate ? new Date(dto.orderDate) : order.orderDate;
+    order.totalAmount = totalAmount;
+    order.items = orderItems as OrderItem[];
+    order.supplyItems = supplyItems as OrderSupplyItem[];
+
+    await this.ordersRepository.save(order);
+    this.logger.log(`Order updated: ${order.orderNumber}, total: ${totalAmount}`);
+    return this.findOne(id);
+  }
+
+  private async buildLineItemsFromDto(dto: CreateOrderDto): Promise<{
+    orderItems: Partial<OrderItem>[];
+    supplyItems: Partial<OrderSupplyItem>[];
+    totalAmount: number;
+  }> {
+    const orderItems: Partial<OrderItem>[] = [];
+    let totalAmount = 0;
+
+    for (const item of dto.items) {
+      const product = await this.productsRepository.findOne({
+        where: { id: item.productId, status: 'active' },
+      });
+
+      if (!product) {
+        throw new BadRequestException(
+          `Sản phẩm ${item.productId} không tồn tại hoặc ngừng bán`,
+        );
+      }
+
+      let originalPrice = Number(product.price);
+      let sizeId: string | undefined;
+
+      if (item.sizeId) {
+        const size = product.sizes?.find((s) => s.id === item.sizeId);
+        if (!size) {
+          throw new BadRequestException(
+            `Size ${item.sizeId} không tồn tại cho sản phẩm "${product.name}"`,
+          );
+        }
+        originalPrice = Number(size.price);
+        sizeId = size.id;
+      }
+
+      const isGift = item.isGift || false;
+      const unitPrice = isGift
+        ? Number(item.customPrice ?? 0)
+        : originalPrice;
+
+      const subtotal = unitPrice * item.quantity;
+      totalAmount += subtotal;
+
+      orderItems.push({
+        productId: item.productId,
+        sizeId,
+        quantity: item.quantity,
+        unitPrice,
+        subtotal,
+        isGift,
+        customPrice: isGift ? Number(item.customPrice ?? 0) : undefined,
+      });
+    }
+
+    const supplyItems: Partial<OrderSupplyItem>[] = [];
+    if (dto.supplyItems && dto.supplyItems.length > 0) {
+      for (const si of dto.supplyItems) {
+        const supply = await this.suppliesRepository.findOne({
+          where: { id: si.supplyId },
+        });
+        if (!supply) {
+          throw new BadRequestException(`Vật tư ${si.supplyId} không tồn tại`);
+        }
+        const unitPrice = Number(si.unitPrice ?? 0);
+        const subtotal = unitPrice * si.quantity;
+        totalAmount += subtotal;
+        supplyItems.push({
+          supplyId: si.supplyId,
+          quantity: si.quantity,
+          unitPrice,
+          subtotal,
+        });
+      }
+    }
+
+    return { orderItems, supplyItems, totalAmount };
   }
 
   async findAll(
